@@ -1,0 +1,582 @@
+<!doctype html>
+<html lang="en"><head>
+<meta charset="utf-8">
+
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>Sentinel: how this works</title>
+<style>
+*,*::before,*::after{box-sizing:border-box;margin:0;padding:0}
+:root{
+  color-scheme:dark;
+  --surface:#1a1a19; --raised:#232322; --line:rgba(195,194,183,.14);
+  --ink:#ffffff; --ink-2:#c3c2b7; --ink-3:#8a8a80;
+  --series:#3987e5; --series-soft:rgba(57,135,229,.16); --track:#184f95;
+  --mut-soft:rgba(195,194,183,.10);
+  --good:#0ca30c; --warn:#fab219; --bad:#d03b3b;
+  --mono:ui-monospace,SFMono-Regular,Menlo,Consolas,monospace;
+}
+@media (prefers-color-scheme:light){
+  :root{
+    color-scheme:light;
+    --surface:#fcfcfb; --raised:#ffffff; --line:rgba(11,11,11,.12);
+    --ink:#0b0b0b; --ink-2:#52514e; --ink-3:#79776f;
+    --series:#2a78d6; --series-soft:rgba(42,120,214,.12); --track:#cde2fb;
+    --mut-soft:rgba(11,11,11,.07);
+  }
+}
+body{
+  font-family:Inter,-apple-system,BlinkMacSystemFont,"Segoe UI",Roboto,sans-serif;
+  font-size:15px; line-height:1.55; background:var(--surface); color:var(--ink);
+  -webkit-text-size-adjust:100%;
+}
+.wrap{max-width:900px;margin:0 auto;padding:20px 20px 64px}
+
+/* header */
+.top{display:flex;align-items:baseline;gap:12px;flex-wrap:wrap;
+     padding-bottom:18px;margin-bottom:22px;border-bottom:1px solid var(--line)}
+.brand{font-size:15px;font-weight:600;letter-spacing:.14em;text-transform:uppercase}
+.top-when{font-size:13px;color:var(--ink-3);margin-left:auto}
+.pill{display:inline-flex;align-items:center;gap:6px;font-size:12px;
+      padding:2px 9px;border-radius:999px;border:1px solid var(--line);color:var(--ink-2)}
+.pill-ok{color:var(--good)} .pill-bad{color:var(--bad);border-color:var(--bad)}
+.banner{background:var(--bad);color:#fff;padding:9px 14px;border-radius:6px;
+        margin-bottom:20px;font-size:14px;font-weight:500}
+
+/* hero */
+.hero{margin-bottom:34px}
+.hero-eyebrow{font-size:12px;letter-spacing:.1em;text-transform:uppercase;
+              color:var(--ink-3);margin-bottom:6px}
+.hero-num{font-size:clamp(2.6rem,10vw,4rem);font-weight:600;line-height:1.05;
+          letter-spacing:-.02em}
+/* The slow book's balance. Deliberately smaller than the hero: one hero figure
+   per view, and the fast book is the one that turns over daily. */
+.hero-num-sm{font-size:clamp(1.8rem,6vw,2.4rem)}
+.hero-delta{font-size:15px;color:var(--ink-2);margin-top:6px}
+/* The second book's balance, one line under the first. Same size as the delta
+   line, not the hero figure: two books, still one hero. */
+/* Backtest tabs. CSS-only (radio + :checked sibling), deliberately: the page
+   ships zero JavaScript, and a query-string control cannot work on the public
+   copy — a static host ignores the query string and returns identical bytes,
+   which is why publish.py already strips the alert-feed filter. The radios stay
+   focusable (opacity, not display:none) so the tabs are keyboard-operable. */
+.bt-radio{position:absolute;opacity:0;width:0;height:0;pointer-events:none}
+.bt-tabs{display:flex;gap:6px;margin:2px 0 14px}
+.bt-tabs label{font-size:13px;padding:5px 12px;border-radius:999px;cursor:pointer;
+               border:1px solid var(--line);color:var(--ink-3);user-select:none}
+.bt-tabs label:hover{color:var(--ink-2)}
+.bt-panel{display:none}
+#bt-fast:checked ~ #btp-fast,#bt-slow:checked ~ #btp-slow{display:block}
+#bt-fast:checked ~ .bt-tabs label[for="bt-fast"],
+#bt-slow:checked ~ .bt-tabs label[for="bt-slow"]{
+  color:var(--ink);border-color:var(--ink-3)}
+#bt-fast:focus-visible ~ .bt-tabs label[for="bt-fast"],
+#bt-slow:focus-visible ~ .bt-tabs label[for="bt-slow"]{outline:2px solid var(--series);
+  outline-offset:2px}
+.hero-second{font-size:15px;color:var(--ink-2);margin-top:8px;padding-top:8px;
+             border-top:1px solid var(--line)}
+.hero-second a{color:var(--ink-2);text-decoration:none;border-bottom:1px dotted}
+.hero-second a:hover{color:var(--ink)}
+.hero-second b{color:var(--ink);font-weight:600}
+.hero-sep{color:var(--ink-3);margin:0 4px}
+.hero-meta{font-size:13px;color:var(--ink-3);margin-top:10px}
+.hero-closing{font-size:13px;color:var(--ink-2);margin-top:4px}
+.hero-cold-num{font-size:clamp(1.7rem,6vw,2.4rem);font-weight:600;color:var(--ink-2)}
+.hero-cold-sub{font-size:14px;color:var(--ink-2);margin-top:8px;max-width:60ch}
+.hero-cold-cmd{font-family:var(--mono);font-size:13px;background:var(--raised);
+  border:1px solid var(--line);border-radius:6px;padding:9px 12px;margin-top:12px;
+  display:inline-block;color:var(--ink)}
+.warn-line{font-size:13px;color:var(--warn);margin-top:6px}
+
+/* equity curve */
+.curve{width:100%;height:auto;display:block;margin:14px 0 4px;overflow:visible}
+.curve-area{fill:var(--series-soft);stroke:none}
+.curve-line{fill:none;stroke:var(--series);stroke-width:2;
+            stroke-linejoin:round;stroke-linecap:round}
+.curve-now{fill:var(--series);stroke:var(--surface);stroke-width:2}
+.curve-base{stroke:var(--ink-3);stroke-width:1;opacity:.5}
+.curve-cap{font-size:12px;color:var(--ink-3);margin-top:2px}
+/* "live as of" — dates the page so a 60s auto-refresh cannot imply that
+   everything on screen is current */
+.asof{display:inline-flex;align-items:center;gap:7px;font-size:12px;
+  color:var(--ink-2);margin-top:8px;padding:3px 10px;border-radius:999px;
+  border:1px solid var(--line);background:var(--raised)}
+.asof b{color:var(--ink);font-variant-numeric:tabular-nums}
+.asof-dot{width:6px;height:6px;border-radius:50%;background:var(--good);
+  flex-shrink:0}
+.asof-off{color:var(--ink-3)}
+.asof-held .asof-dot{background:var(--ink-3)}
+.pill-held{border-color:var(--ink-3);color:var(--ink-3)}
+/* the muted (BACKTEST) variant: same geometry, no hue. "Emphasis" pattern —
+   the live curve is the point, this one is context, and grey says so before
+   any label is read. */
+.curve-mut{width:100%;height:auto;display:block;margin:14px 0 4px;overflow:visible}
+.curve-area-mut{fill:var(--mut-soft);stroke:none}
+.curve-line-mut{fill:none;stroke:var(--ink-3);stroke-width:2;
+                stroke-linejoin:round;stroke-linecap:round}
+.curve-now-mut{fill:var(--ink-3);stroke:var(--surface);stroke-width:2}
+.curve-mut .tip{opacity:0;pointer-events:none;transition:opacity .08s}
+.curve-mut .pt:hover .tip{opacity:1}
+.curve-mut .tip line{stroke:var(--ink-3);stroke-width:1}
+.curve-mut .tip circle{fill:var(--ink-3);stroke:var(--surface);stroke-width:2}
+.curve-mut .tip text{fill:var(--ink-2);font-size:11px;font-family:var(--mono);
+                     paint-order:stroke;stroke:var(--surface);stroke-width:3px}
+/* the whole card recedes: dashed-free, just a quieter surface and border */
+.card-mut{background:transparent;border-style:dotted}
+.card-mut .stat-v{color:var(--ink-2)}
+.chip-mut{color:var(--ink-3);letter-spacing:.06em;text-transform:uppercase;
+          font-size:10px}
+.howto-more{margin-top:14px;font-size:13.5px}
+.howto-more a{color:var(--series);text-decoration:none}
+.howto-more a:hover{text-decoration:underline}
+/* the live (unbooked) pill: distinct from the status colours, because this is
+   a freshness marker, not a good/bad judgement */
+.live-pill{display:inline-block;font-size:10px;letter-spacing:.06em;
+  text-transform:uppercase;padding:1px 6px;border-radius:999px;
+  border:1px solid var(--series);color:var(--series);margin-right:5px}
+.curve .tip{opacity:0;pointer-events:none;transition:opacity .08s}
+.curve .pt:hover .tip{opacity:1}
+.curve .tip line{stroke:var(--ink-3);stroke-width:1}
+.curve .tip circle{fill:var(--series);stroke:var(--surface);stroke-width:2}
+.curve .tip text{fill:var(--ink);font-size:11px;font-family:var(--mono);
+                 paint-order:stroke;stroke:var(--surface);stroke-width:3px}
+.curve-empty{margin:14px 0}
+
+/* cards */
+.card{background:var(--raised);border:1px solid var(--line);border-radius:8px;
+      padding:16px 18px;margin-bottom:14px}
+.card h2{font-size:13px;font-weight:600;letter-spacing:.08em;text-transform:uppercase;
+         color:var(--ink-2);display:flex;align-items:center;gap:8px}
+.count{font-size:12px;font-weight:500;letter-spacing:0;text-transform:none;
+       color:var(--ink-3);border:1px solid var(--line);border-radius:999px;padding:0 7px}
+.sub-note{font-size:12.5px;color:var(--ink-3);margin:6px 0 12px;max-width:78ch}
+.sub-note b{color:var(--ink-2)}
+
+/* tables */
+.scroll-x{overflow-x:auto}
+.t{width:100%;border-collapse:collapse;font-size:13.5px}
+.t th{text-align:left;font-weight:500;font-size:11px;letter-spacing:.06em;
+      text-transform:uppercase;color:var(--ink-3);padding:0 10px 7px 0;
+      border-bottom:1px solid var(--line);white-space:nowrap}
+.t td{padding:7px 10px 7px 0;border-bottom:1px solid var(--line);vertical-align:top}
+.t tbody tr:last-child td{border-bottom:none}
+.t .num{text-align:right;font-variant-numeric:tabular-nums;white-space:nowrap}
+.t th.num{text-align:right}
+.tick{font-weight:600;font-family:var(--mono);display:block}
+.co{display:block;font-size:11.5px;font-weight:400;color:var(--ink-3);
+    margin-top:1px;line-height:1.3;white-space:nowrap}
+.why{white-space:nowrap}
+.why-a{color:var(--ink-2);text-decoration:none;font-size:12.5px}
+.why-a:hover{color:var(--series)}
+.why-a b,.why-z b,.why-z{color:var(--series);font-variant-numeric:tabular-nums}
+.why-z{font-size:12.5px}
+.totals td{border-top:1px solid var(--line);font-weight:600;color:var(--ink-2)}
+.conv{font-size:12px}
+.summary{color:var(--ink-2);max-width:52ch}
+.dim{color:var(--ink-3)}
+.tiny{font-size:12px}
+.pos{color:var(--good)} .neg{color:var(--bad)} .flat{color:var(--ink-3)}
+
+/* meter */
+.meter{display:inline-block;position:relative;width:88px;height:7px;
+       border-radius:4px;background:var(--track);vertical-align:middle;
+       overflow:hidden;margin-right:8px}
+.meter-fill{position:absolute;inset:0 auto 0 0;background:var(--series);
+            border-radius:4px}
+.meter-low{background:var(--ink-3)}
+.meter-tick{position:absolute;left:50%;top:0;bottom:0;width:1px;
+            background:var(--surface);opacity:.85}
+.meter-num{font-variant-numeric:tabular-nums;font-size:13px}
+.meter-cell{white-space:nowrap}
+
+/* chips & badges */
+.chip{display:inline-block;font-size:11px;padding:1px 7px;border-radius:999px;
+      border:1px solid var(--line);color:var(--ink-2);margin-right:5px;
+      white-space:nowrap}
+.chip-warn{color:var(--warn);border-color:var(--warn)}
+.chip-short{color:var(--series);border-color:var(--series)}
+.badge{display:inline-block;font-size:11px;font-family:var(--mono);
+       padding:1px 7px;border-radius:4px;border:1px solid var(--line);color:var(--ink-2)}
+.b-warn{color:var(--warn);border-color:var(--warn)}
+.b-blue{color:var(--series);border-color:var(--series)}
+.b-good{color:var(--good);border-color:var(--good)}
+.b-bad{color:var(--bad);border-color:var(--bad)}
+
+/* tabs */
+.tabs{display:flex;gap:6px;align-items:center;flex-wrap:wrap;margin:10px 0 14px}
+.tab{font-size:12.5px;padding:3px 10px;border-radius:999px;border:1px solid var(--line);
+     color:var(--ink-2);text-decoration:none}
+.tab:hover{color:var(--ink)}
+.tab-on{background:var(--series);border-color:var(--series);color:#fff}
+.tab-sep{width:1px;height:16px;background:var(--line);margin:0 3px}
+
+/* disclosure */
+details.sub,details.plumb{margin-top:12px}
+details.plumb{background:var(--raised);border:1px solid var(--line);
+              border-radius:8px;padding:12px 18px;margin-bottom:14px}
+summary{cursor:pointer;font-size:12.5px;color:var(--ink-2);
+        list-style:none;display:flex;align-items:center;gap:7px}
+summary::-webkit-details-marker{display:none}
+summary::before{content:"▸";color:var(--ink-3);font-size:11px}
+details[open]>summary::before{content:"▾"}
+summary:hover{color:var(--ink)}
+details.sub>*:not(summary){margin-top:12px}
+details.plumb>*:not(summary){margin-top:14px}
+.plumb h3{font-size:11px;font-weight:600;letter-spacing:.07em;text-transform:uppercase;
+          color:var(--ink-3);margin-top:18px}
+
+/* stat strip + ingest bars */
+.stats{display:grid;grid-template-columns:repeat(auto-fit,minmax(150px,1fr));gap:12px}
+/* 190px settles to 4 columns at this content width: the hero's four
+   tiles make one clean row, and the backtest's six wrap 4+2 rather than
+   the orphaned 5+1 that a narrower track produced. */
+.stats-tight{gap:14px 18px;margin:12px 0 4px;
+             grid-template-columns:repeat(auto-fit,minmax(190px,1fr))}
+.stats-tight .stat-v{font-size:19px}
+.stats-tight .stat-s{line-height:1.35;margin-top:2px}
+.stat-l{font-size:11px;letter-spacing:.06em;text-transform:uppercase;color:var(--ink-3)}
+.stat-v{font-size:22px;font-weight:600;line-height:1.2}
+.stat-s{font-size:12px;color:var(--ink-3)}
+.bars{display:flex;align-items:flex-end;gap:2px;height:72px}
+.bar{flex:1;background:var(--series);border-radius:2px 2px 0 0;min-height:2px}
+.ratio{display:flex;height:5px;border-radius:3px;overflow:hidden;
+       background:var(--line);min-width:70px}
+.ratio-ok{background:var(--series)} .ratio-dupe{background:var(--ink-3)}
+
+/* phone: the wide tables become stacked cards */
+@media (max-width:640px){
+  body{font-size:14px}
+  .wrap{padding:16px 14px 48px}
+  .t-cards thead{position:absolute;width:1px;height:1px;overflow:hidden;clip:rect(0 0 0 0)}
+  .t-cards tr{display:block;padding:10px 0;border-bottom:1px solid var(--line)}
+  .t-cards tr:last-child{border-bottom:none}
+  .t-cards td{display:flex;justify-content:space-between;gap:14px;
+              border:none;padding:2px 0;text-align:right}
+  .t-cards td::before{content:attr(data-l);color:var(--ink-3);font-size:11.5px;
+                      letter-spacing:.05em;text-transform:uppercase;text-align:left}
+  .t-cards td:empty{display:none}
+  .meter{width:64px}
+  /* the ticker heads its own card — as a label/value row it read as
+     "TICKER: OTLY", which is noise on every single card */
+  .t-pos td.tick{display:block;text-align:left;font-size:15px;
+                 padding-bottom:6px;letter-spacing:.03em}
+  .t-pos td.tick::before{display:none}
+}
+
+.ex{max-width:820px}
+.ex h1{font-size:clamp(1.9rem,5.4vw,3rem);font-weight:600;line-height:1.15;
+  letter-spacing:-.02em;margin-top:6px}
+.ex-hero{margin:28px 0 40px}
+@media (min-width:700px){.ex h1 .br{display:block;height:0}}
+.lede{font-size:clamp(1rem,2.6vw,1.2rem);color:var(--ink-2);margin-top:14px}
+.tldr{background:var(--raised);border:1px solid var(--line);border-radius:10px;
+  padding:22px 24px;margin-bottom:44px}
+.tldr h2{font-size:12px;font-weight:600;letter-spacing:.1em;text-transform:uppercase;
+  color:var(--ink-3);margin-bottom:12px}
+.tldr p{font-size:clamp(1rem,2.4vw,1.12rem);line-height:1.65;color:var(--ink)}
+.tldr b{color:var(--ink);font-weight:600}
+h2.sec{font-size:clamp(1.25rem,3.4vw,1.6rem);font-weight:600;letter-spacing:-.01em;
+  margin:52px 0 6px}
+.sec-sub{color:var(--ink-3);font-size:14px;margin-bottom:20px;max-width:70ch}
+
+/* pipeline stages */
+.stages{display:flex;flex-direction:column;gap:2px}
+.stage{display:flex;gap:20px;padding:22px 0;border-bottom:1px solid var(--line)}
+.stage:last-child{border-bottom:none}
+.stage-n{flex-shrink:0;width:38px;height:38px;border-radius:50%;
+  border:1px solid var(--series);color:var(--series);display:flex;
+  align-items:center;justify-content:center;font-size:15px;font-weight:600;
+  font-variant-numeric:tabular-nums}
+.stage-body{min-width:0}
+.stage h3{font-size:17px;font-weight:600;margin-bottom:8px}
+.plain{font-size:15.5px;line-height:1.6;color:var(--ink-2);margin-bottom:10px}
+.plain b{color:var(--ink)}
+.detail{font-size:13px;line-height:1.6;color:var(--ink-3);
+  border-left:2px solid var(--line);padding-left:12px}
+.detail b{color:var(--ink-2)}
+
+/* the pipeline diagram: HTML boxes, themed by these variables so it follows the
+   reader's light/dark preference like the rest of the page. Each box sizes to
+   its own text, so a label cannot spill past the border the way the old
+   fixed-width mermaid export did, and the column reflows on a phone. */
+.pipe-wrap{margin:10px 0 6px}
+.flow{max-width:400px;margin:0 auto;display:flex;flex-direction:column}
+.flow-node{background:var(--raised);border:1px solid var(--line);border-radius:10px;
+  padding:11px 15px;text-align:center}
+.fn-title{display:block;font-size:14px;font-weight:600;color:var(--ink);
+  line-height:1.35}
+.fn-hint{display:block;font-size:12.5px;font-style:italic;color:var(--series);
+  line-height:1.4;margin-top:3px}
+.flow-node.src{border-radius:22px;border-color:var(--series)}
+.flow-node.haz{border-color:var(--warn)}
+.flow-node.haz .fn-title{color:var(--warn);text-transform:uppercase;
+  letter-spacing:.04em}
+.flow-node.haz .fn-hint{color:var(--warn)}
+.flow-node.book{border-color:var(--good)}
+.flow-node.book .fn-hint{color:var(--good)}
+.flow-cluster{border:1px dashed var(--line);border-radius:14px;
+  padding:24px 12px 14px;margin:2px 0;display:flex;flex-direction:column;
+  position:relative}
+.flow-cluster-label{position:absolute;top:-8px;left:16px;background:var(--surface);
+  padding:0 8px;font-size:11px;font-weight:600;letter-spacing:.09em;
+  color:var(--ink-3)}
+/* arrows sit only between boxes, drawn in CSS: a short line plus a triangle */
+.flow-arrow{width:2px;height:16px;background:var(--ink-3);opacity:.45;
+  margin:6px auto 0;position:relative}
+.flow-arrow::after{content:"";position:absolute;bottom:-4px;left:50%;
+  transform:translateX(-50%);border-left:4px solid transparent;
+  border-right:4px solid transparent;border-top:5px solid var(--ink-3)}
+.flow-gap{text-align:center;padding:8px 0 2px}
+.flow-gap span{font-size:11.5px;font-style:italic;color:var(--ink-3)}
+
+/* funnel */
+.funnel{display:flex;flex-direction:column;gap:10px}
+.fn-row{display:flex;align-items:center;gap:16px;flex-wrap:wrap}
+.fn-bar-wrap{flex:0 0 46%;display:flex;align-items:center;gap:10px;min-width:180px}
+.fn-bar{height:26px;border-radius:4px;
+  background:linear-gradient(90deg,var(--series),var(--series));opacity:.85}
+.fn-n{font-variant-numeric:tabular-nums;font-size:14px;font-weight:600;
+  white-space:nowrap}
+.fn-lab{flex:1;min-width:160px}
+.fn-lab b{display:block;font-size:14px}
+.fn-lab span{font-size:12.5px;color:var(--ink-3)}
+
+/* the one-trade diagram */
+.ex-card{padding:24px}
+.ex-card>p{font-size:15.5px;line-height:1.65;color:var(--ink-2);max-width:72ch}
+.ex-card>p b{color:var(--ink)}
+.tradesvg{width:100%;height:auto;display:block;margin:26px 0 18px;overflow:visible}
+.tradesvg .ax{stroke:var(--line);stroke-width:1}
+.tradesvg .axl{fill:var(--ink-3);font-size:12px;font-family:inherit}
+.tradesvg .lbl{fill:var(--ink-2);font-size:12.5px;font-family:inherit}
+.tradesvg .mkt{fill:none;stroke:var(--ink-3);stroke-width:2.5;stroke-linecap:round}
+.tradesvg .mkt-t{fill:var(--ink-3)}
+.tradesvg .stk{fill:none;stroke:var(--series);stroke-width:2.5;stroke-linecap:round}
+.tradesvg .stk-t{fill:var(--series)}
+.tradesvg .dot{fill:var(--ink-2)}
+.tradesvg .gap{stroke:var(--good);stroke-width:2}
+.tradesvg .gapbox{fill:var(--good);opacity:.14}
+.tradesvg .gapl{fill:var(--good);font-size:13px;font-weight:600;font-family:inherit}
+.ex-note{font-size:13.5px;line-height:1.6;color:var(--ink-3);margin-top:14px;
+  max-width:74ch}
+.ex-note b{color:var(--ink-2)}
+
+.tbl-h{font-size:12px;font-weight:600;letter-spacing:.08em;text-transform:uppercase;
+  margin:6px 0 10px}
+.tbl-h.g{color:var(--good)} .tbl-h.r{color:var(--bad)}
+.t .tk{font-weight:600;font-family:var(--mono)}
+.t b.g{color:var(--good)} .t b.r{color:var(--bad)}
+.card+.card,.t+.tbl-h{margin-top:26px}
+
+.warn-card{border-left:3px solid var(--warn)}
+.warn-card h3{font-size:17px;font-weight:600;margin-bottom:12px}
+.warn-card p{font-size:15px;line-height:1.65;color:var(--ink-2);margin-bottom:12px;
+  max-width:74ch}
+.warn-card p b{color:var(--ink)}
+.honest{list-style:none;display:flex;flex-direction:column;gap:14px}
+.honest li{font-size:14.5px;line-height:1.6;color:var(--ink-2);padding-left:18px;
+  position:relative;max-width:76ch}
+.honest li::before{content:"";position:absolute;left:0;top:9px;width:6px;height:6px;
+  border-radius:1px;background:var(--series)}
+.honest b{color:var(--ink)}
+.ex-foot{margin:48px 0 0;font-size:15px}
+.ex-foot a,.top-when a{color:var(--series);text-decoration:none}
+.ex-foot a:hover,.top-when a:hover{text-decoration:underline}
+
+@media (max-width:640px){
+  .stage{gap:14px}
+  .stage-n{width:32px;height:32px;font-size:14px}
+  .fn-bar-wrap{flex:0 0 100%}
+}
+</style>
+</head><body>
+<div class="wrap ex">
+
+  <header class="top">
+    <span class="brand">Sentinel</span>
+    <span class="top-when"><a href="/sentinel/">← back to the live book</a></span>
+  </header>
+
+  <section class="ex-hero">
+    <p class="hero-eyebrow">How this works</p>
+    <h1>A robot reads the news all day,<span class="br"> </span>then bets against the hype.</h1>
+    <p class="lede">It keeps score in public, including when it loses.</p>
+  </section>
+
+  <section class="tldr">
+    <h2>The whole thing in 1 paragraph</h2>
+    <p>Every 10 minutes, a small computer in my house reads 7 public
+    news and social feeds. Sometimes a stock gets talked about far more than
+    usual and <b>no real news explains why</b>. The computer writes that down as
+    a <b>hazard</b>. Stocks like that tend to do slightly worse than the market
+    over the next week. The excitement fades faster than the price. So the
+    computer places a pretend bet against each one with fake money. It closes the
+    bet 5 trading days later. It records every bet forever, win or lose. Right now
+    it is right <b>64% of the time</b> and averages <b>+2.11%</b> per
+    bet.</p>
+  </section>
+
+  <h2 class="sec">The pipeline, step by step</h2>
+
+  <div class="stages">
+    
+    <div class="stage">
+      <div class="stage-n">1</div>
+      <div class="stage-body">
+        <h3>It reads everything, constantly</h3>
+        <p class="plain">Every 10 minutes it checks company filings, press releases, Reddit, StockTwits, and records of what politicians buy and sell. It has collected <b>40,554</b> items so far.</p>
+        <p class="detail">A systemd timer polls each source. It removes duplicates with a SHA-256 hash (Secure Hash Algorithm, 256-bit). Then it links each item to a stock ticker. It uses the filing's official company ID where one exists. It never guesses the ticker from the text.</p>
+      </div>
+    </div>
+
+    
+    <div class="stage">
+      <div class="stage-n">2</div>
+      <div class="stage-body">
+        <h3>It throws most of it away</h3>
+        <p class="plain">Most 'news' is the same story repeated. About <b>55%</b> of what it reads gets dropped as a near-copy of something it already saw.</p>
+        <p class="detail">It turns each item into a list of numbers that stands for its meaning. That list is called an embedding. It compares each one against everything from the last few weeks. It drops any item too close to a neighbour before that item can become an alert.</p>
+      </div>
+    </div>
+
+    
+    <div class="stage">
+      <div class="stage-n">3</div>
+      <div class="stage-body">
+        <h3>It notices when a crowd gets loud for no reason</h3>
+        <p class="plain">Sometimes a stock gets mentioned far more than its own normal rate. The system looks for a real filing or press release to explain it. If there isn't one, that is a <b>hazard</b>: attention without news.</p>
+        <p class="detail">It turns mention counts into a z-score against that ticker's own recent baseline. A stock that is always noisy does not trip it. It flags a spike that has no primary source inside a 6-hour window. It has found <b>824</b> hazards across <b>391</b> different stocks so far.</p>
+      </div>
+    </div>
+
+    
+    <div class="stage">
+      <div class="stage-n">4</div>
+      <div class="stage-body">
+        <h3>It bets against them, carefully</h3>
+        <p class="plain">It puts a small, equal amount against every hazard priced between $5 and $100. It never places a single large bet. It places dozens of tiny ones, so no single stock can wreck it.</p>
+        <p class="detail">It starts with $1,000 of paper credits. Each day it risks 20% of the balance. It splits that evenly across every stock that qualifies. A 5-day hold recycles about 20% of the money per day. It cannot re-enter the same stock for 20 trading days.</p>
+      </div>
+    </div>
+
+    
+    <div class="stage">
+      <div class="stage-n">5</div>
+      <div class="stage-body">
+        <h3>5 days later it marks its own homework</h3>
+        <p class="plain">Every bet closes after 5 trading days. It writes the outcome into a permanent record, whether the bet worked or not. That record is the actual product.</p>
+        <p class="detail">It measures returns in <i>trading</i> days, not calendar days. It starts from the closing price at the moment the alert became public. It uses prices adjusted for splits and dividends. It deducts realistic trading costs instead of hiding them in a footnote.</p>
+      </div>
+    </div>
+  </div>
+
+  <h2 class="sec">The same thing, as a map</h2>
+  <p class="sec-sub">2 loops. The top loop runs every 10 minutes. It decides what
+  is worth noticing. The bottom loop runs once a night. It marks its own homework
+  and places the bets. Nothing here starts by hand.</p>
+  <div class="pipe-wrap"><div class="flow"><div class="flow-node src"><span class="fn-title">Company filings, newswires, StockTwits, Reddit, Congress, federal contracts</span><span class="fn-hint">"Everywhere it reads from. All public, all free."</span></div><div class="flow-arrow" aria-hidden="true"></div><div class="flow-cluster"><span class="flow-cluster-label">EVERY 10 MINUTES</span><div class="flow-node"><span class="fn-title">Fetch what's new</span><span class="fn-hint">"Go and look at the world again."</span></div><div class="flow-arrow" aria-hidden="true"></div><div class="flow-node"><span class="fn-title">Clean it up</span><span class="fn-hint">"Strip the formatting, drop exact repeats."</span></div><div class="flow-arrow" aria-hidden="true"></div><div class="flow-node"><span class="fn-title">Find the company</span><span class="fn-hint">"Which company is this about?"</span></div><div class="flow-arrow" aria-hidden="true"></div><div class="flow-node"><span class="fn-title">Is it new?</span><span class="fn-hint">"Have I seen this story before?"</span></div><div class="flow-arrow" aria-hidden="true"></div><div class="flow-node"><span class="fn-title">Count the chatter</span><span class="fn-hint">"How loudly is this ticker being talked about?"</span></div><div class="flow-arrow" aria-hidden="true"></div><div class="flow-node"><span class="fn-title">Worth flagging?</span><span class="fn-hint">"Is this worth writing down?"</span></div><div class="flow-arrow" aria-hidden="true"></div><div class="flow-node haz"><span class="fn-title">Hazard</span><span class="fn-hint">"Everyone is shouting and nothing happened. That is the suspicious one."</span></div></div><div class="flow-arrow" aria-hidden="true"></div><div class="flow-gap"><span>alerts waiting to be graded</span></div><div class="flow-arrow" aria-hidden="true"></div><div class="flow-cluster"><span class="flow-cluster-label">EVERY NIGHT, 2 AM</span><div class="flow-node"><span class="fn-title">Get the closing prices</span><span class="fn-hint">"What did everything close at?"</span></div><div class="flow-arrow" aria-hidden="true"></div><div class="flow-node"><span class="fn-title">Mark yesterday's homework</span><span class="fn-hint">"How did every past alert do?"</span></div><div class="flow-arrow" aria-hidden="true"></div><div class="flow-node book"><span class="fn-title">Place today's bets</span><span class="fn-hint">"Small, and spread wide."</span></div><div class="flow-arrow" aria-hidden="true"></div><div class="flow-node book"><span class="fn-title">Close anything 5 days old</span><span class="fn-hint">"Cash it out, win or lose."</span></div><div class="flow-arrow" aria-hidden="true"></div><div class="flow-node book"><span class="fn-title">Write down the balance</span><span class="fn-hint">"Tonight's number. Never edited again."</span></div></div></div></div>
+
+  <h2 class="sec">What survives each stage</h2>
+  <p class="sec-sub">Roughly 1,000 things read for every bet placed. The bars use
+  a log scale, or the last one would be invisible.</p>
+  <div class="funnel"><div class="fn-row"><div class="fn-bar-wrap"><div class="fn-bar" style="width:100.0%"></div><span class="fn-n">40,554</span></div><div class="fn-lab"><b>things collected</b><span>every filing, press release and post</span></div></div><div class="fn-row"><div class="fn-bar-wrap"><div class="fn-bar" style="width:79.1%"></div><span class="fn-n">18,249</span></div><div class="fn-lab"><b>actually new</b><span>55% were repeats of something already seen</span></div></div><div class="fn-row"><div class="fn-bar-wrap"><div class="fn-bar" style="width:27.9%"></div><span class="fn-n">1,027</span></div><div class="fn-lab"><b>worth flagging</b><span>cleared the scoring threshold</span></div></div><div class="fn-row"><div class="fn-bar-wrap"><div class="fn-bar" style="width:25.3%"></div><span class="fn-n">824</span></div><div class="fn-lab"><b>hazard flags</b><span>unexplained crowd spikes, the useful ones</span></div></div><div class="fn-row"><div class="fn-bar-wrap"><div class="fn-bar" style="width:19.8%"></div><span class="fn-n">486</span></div><div class="fn-lab"><b>graded trades</b><span>old enough to have a verdict</span></div></div></div>
+
+  <h2 class="sec">What a single bet actually looks like</h2>
+  <p class="sec-sub">This is the part worth understanding. It explains why the
+  system does not care whether the market goes up or down.</p>
+
+  <div class="card ex-card">
+    <p>It never bets that a stock will <i>fall</i>. It bets the stock will do
+    <b>worse than the whole stock market</b>. It places 2 bets at once: 1
+    against the flagged stock, 1 <i>for</i> the market.</p>
+    
+<svg class="tradesvg" viewBox="0 0 790 260" role="img"
+     aria-label="A stock falling 12 percent while the market falls 2 percent; the
+     10 percent gap between them is the profit.">
+  <line class="ax" x1="60" y1="30" x2="60" y2="210"/>
+  <line class="ax" x1="60" y1="210" x2="600" y2="210"/>
+  <text class="axl" x="60" y="232" text-anchor="middle">day 0</text>
+  <text class="axl" x="600" y="232" text-anchor="middle">day 5</text>
+  <text class="axl" x="330" y="252" text-anchor="middle">5 trading days later, both bets close</text>
+
+  <circle class="dot" cx="60" cy="70" r="5"/>
+  <text class="lbl" x="72" y="58">both bets start here</text>
+
+  <polyline class="mkt" points="60,70 195,78 330,88 465,84 600,95"/>
+  <text class="lbl mkt-t" x="608" y="99">the market · −2%</text>
+
+  <polyline class="stk" points="60,70 195,105 330,140 465,158 600,180"/>
+  <text class="lbl stk-t" x="608" y="184">the flagged stock · −12%</text>
+
+  <line class="gap" x1="600" y1="95" x2="600" y2="180"/>
+  <rect class="gapbox" x="474" y="120" width="118" height="30" rx="6"/>
+  <text class="gapl" x="533" y="140" text-anchor="middle">gap = +10%</text>
+</svg>
+    <p class="ex-note">If the market crashes and the stock crashes harder, that is
+    profit. If the market rises and the stock rises less, that is also profit.
+    Only the <b>gap</b> matters. That is what "market-neutral" means. It is why a
+    bad week for stocks is usually not a bad week for this.</p>
+  </div>
+
+  <h2 class="sec">Real bets it has made</h2>
+  <p class="sec-sub">These are actual rows from the database, best and worst. They
+  are not illustrations. The last column is the only one that matters.</p>
+
+  <div class="card">
+    <h3 class="tbl-h g">Its three best</h3>
+    <div class="scroll-x"><table class="t">
+      <thead><tr><th>Stock</th><th class="num">Flagged</th><th class="num">Price</th>
+      <th class="num">Stock did</th><th class="num">Market did</th>
+      <th class="num">Result</th></tr></thead>
+      <tbody><tr><td class="tk">PHOE</td><td class="num dim">2026-07-20</td><td class="num dim">$36.50</td><td class="num">-45.2%</td><td class="num dim">-0.4%</td><td class="num"><b class="g">+44.8%</b></td></tr><tr><td class="tk">CAST</td><td class="num dim">2026-06-22</td><td class="num dim">$9.84</td><td class="num">-43.1%</td><td class="num dim">-0.5%</td><td class="num"><b class="g">+42.6%</b></td></tr><tr><td class="tk">CAPR</td><td class="num dim">2026-07-27</td><td class="num dim">$7.00</td><td class="num">-40.0%</td><td class="num dim">+2.5%</td><td class="num"><b class="g">+42.5%</b></td></tr></tbody>
+    </table></div>
+
+    <h3 class="tbl-h r">Its three worst</h3>
+    <div class="scroll-x"><table class="t">
+      <thead><tr><th>Stock</th><th class="num">Flagged</th><th class="num">Price</th>
+      <th class="num">Stock did</th><th class="num">Market did</th>
+      <th class="num">Result</th></tr></thead>
+      <tbody><tr><td class="tk">REPL</td><td class="num dim">2026-07-28</td><td class="num dim">$5.35</td><td class="num">+122.8%</td><td class="num dim">+4.1%</td><td class="num"><b class="r">-118.7%</b></td></tr><tr><td class="tk">REPL</td><td class="num dim">2026-07-29</td><td class="num dim">$5.41</td><td class="num">+118.7%</td><td class="num dim">+5.5%</td><td class="num"><b class="r">-113.1%</b></td></tr><tr><td class="tk">SLS</td><td class="num dim">2026-06-22</td><td class="num dim">$8.53</td><td class="num">+81.1%</td><td class="num dim">-0.5%</td><td class="num"><b class="r">-81.6%</b></td></tr></tbody>
+    </table></div>
+    <p class="ex-note">SLS went <b>up 81%</b> in 5 days while the system was
+    betting against it. That is a short squeeze. It is the single biggest risk
+    here. It is why every bet is tiny and spread across dozens of stocks. One
+    uncapped bet like that would erase 25 ordinary wins.</p>
+  </div>
+
+  <h2 class="sec">The uncomfortable part</h2>
+  <div class="card warn-card">
+    <h3>The thing it was built to do does not work</h3>
+    <p>I built Sentinel to find <b>genuinely new, important news</b> before the
+    market noticed. It did find that news, 147 times. Those alerts
+    turned out to be worth <b>-1.27%</b> over 127 measured
+    cases. That is nothing. The idea was wrong.</p>
+    <p>The hazard flag was built to <i>throw noise away</i>. That flag was the
+    part that worked. It sat unreported for weeks because I had deliberately kept
+    it out of every screen that could have shown it. The signal was fine. The
+    scoreboard was broken.</p>
+    <p class="ex-note">This is why the journal exists. It is why the losses are on
+    this page. A system that shows only its wins cannot tell you which half of
+    itself to throw away.</p>
+  </div>
+
+  <h2 class="sec">Things that could still be wrong</h2>
+  <div class="card">
+    <ul class="honest">
+      <li><b>I chose the rules by looking at this same data.</b> The $5 to $100
+      price range was not a hunch. I picked it because it worked in the period I
+      measured. That is a real way to fool yourself. It is why the live book
+      started from scratch on a fixed date instead of backdating.</li>
+      <li><b>It is pretend money with pretend trading costs.</b> Real costs of
+      betting against small, spiking stocks can be much worse than my model. The
+      published number is an upper bound.</li>
+      <li><b>486 bets is not a lot.</b> A typical bet swings about 18%
+      either way. Several losing weeks in a row prove nothing. Neither does a
+      good month.</li>
+      <li><b>It might just stop working.</b> Patterns like this often do. No part
+      of this claims to know why the pattern exists.</li>
+    </ul>
+  </div>
+
+  <p class="ex-foot"><a href="/sentinel/">← see what it's doing right now</a></p>
+</div>
+</body></html>
